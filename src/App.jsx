@@ -4,8 +4,8 @@ import { useState, useRef, useCallback } from "react";
 //  API — calls /api/chat (Vercel route)
 //  No API key needed in browser!
 // ═══════════════════════════════════════
-const ATS_MODEL  = "google/gemini-2.0-flash-exp:free";
-const HUNT_MODEL = "google/gemini-2.0-flash-exp:free";
+const ATS_MODEL  = "meta-llama/llama-3.3-70b-instruct:free";
+const HUNT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 
 async function orCall(messages, model = ATS_MODEL) {
   const res = await fetch("/api/chat", {

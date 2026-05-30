@@ -19,8 +19,18 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify(req.body)
     });
+
     const data = await response.json();
-    return res.status(response.status).json(data);
+
+    // OpenRouter error format: { error: { message: "...", type: "..." } }
+    if (!response.ok) {
+      const msg = typeof data?.error === "string"
+        ? data.error
+        : data?.error?.message || JSON.stringify(data?.error) || `OpenRouter Error ${response.status}`;
+      return res.status(response.status).json({ error: msg });
+    }
+
+    return res.status(200).json(data);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
