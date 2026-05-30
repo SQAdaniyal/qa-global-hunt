@@ -1,29 +1,56 @@
 import { useState, useRef, useCallback } from "react";
 
-const API_URL = "https://api.anthropic.com/v1/messages";
-const MODEL = "claude-sonnet-4-20250514";
-function getKey(){return sessionStorage.getItem("aqk")||"";}
-function saveKey(k){sessionStorage.setItem("aqk",k);}
+// ═══════════════════════════════════════
+//  OPENROUTER API
+// ═══════════════════════════════════════
+const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
+const ATS_MODEL  = "anthropic/claude-3.5-sonnet";
+const HUNT_MODEL = "perplexity/sonar-pro";
 
-async function claudeCall(messages,withSearch=false,apiKey){
-  const key=apiKey||getKey();
-  const payload={model:MODEL,max_tokens:4000,messages};
-  if(withSearch)payload.tools=[{type:"web_search_20250305",name:"web_search"}];
-  const res=await fetch(API_URL,{
+function getKey(){ return sessionStorage.getItem("orkey")||""; }
+function saveKey(k){ sessionStorage.setItem("orkey",k); }
+
+async function orCall(messages, model=ATS_MODEL){
+  const key=getKey();
+  const res=await fetch(OR_URL,{
     method:"POST",
-    headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify(payload)
+    headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"HTTP-Referer":"https://qa-global-hunt.vercel.app","X-Title":"QAGlobalHunt"},
+    body:JSON.stringify({model,max_tokens:4000,messages})
   });
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e?.error?.message||`API Error ${res.status}`);}
-  return res.json();
+  const data=await res.json();
+  return data.choices?.[0]?.message?.content||"";
+}
+
+// PDF text extraction using pdf.js
+async function extractPDFText(b64){
+  if(!window.pdfjsLib){
+    await new Promise((res,rej)=>{
+      const s=document.createElement("script");
+      s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc=
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+  const bytes=atob(b64);
+  const arr=new Uint8Array(bytes.length);
+  for(let i=0;i<bytes.length;i++)arr[i]=bytes.charCodeAt(i);
+  const pdf=await window.pdfjsLib.getDocument({data:arr}).promise;
+  let text="";
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i);
+    const content=await page.getTextContent();
+    text+=content.items.map(x=>x.str).join(" ")+"\n";
+  }
+  return text.trim();
 }
 
 function fileToBase64(file){
-  return new Promise((resolve,reject)=>{
+  return new Promise((res,rej)=>{
     const r=new FileReader();
-    r.onload=(e)=>resolve(e.target.result.split(",")[1]);
-    r.onerror=reject;
-    r.readAsDataURL(file);
+    r.onload=e=>res(e.target.result.split(",")[1]);
+    r.onerror=rej; r.readAsDataURL(file);
   });
 }
 
@@ -35,20 +62,44 @@ function parseJSON(text,type="object"){
   throw new Error("No JSON");
 }
 
-const ATS_PROMPT=`You are a world-class ATS resume optimizer. Analyze this resume and create a full optimization package.
-Candidate: Software Quality Assurance (SQA) PRIMARY, Project Management secondary.
-Goal: Remote worldwide OR company-sponsored relocation. EXCLUDE Israel.
+// ═══════════════════════════════════════
+//  PROMPTS
+// ═══════════════════════════════════════
+const ATS_PROMPT=(resumeText)=>`You are a world-class ATS resume optimizer.
+
+Resume content:
+${resumeText}
+
+Candidate specializes in: Software Quality Assurance (SQA) — PRIMARY, Project Management — secondary.
+Goal: Remote worldwide jobs OR company-sponsored relocation. EXCLUDE Israel.
+
 Return ONLY valid raw JSON (no markdown, no explanation):
-{"candidateName":"name","currentRole":"title","experience":"X years","atsScore":70,"optimizedResume":"COMPLETE professional resume with: Professional Summary | Core Skills | Professional Experience | Education | Certifications | Tools","skills":["Manual Testing","Test Automation","JIRA","Selenium","Agile","Scrum","API Testing","Postman","Bug Reporting","Regression Testing","Performance Testing","SQL","Python","Project Management"],"jobTitles":["QA Engineer","SQA Engineer","Test Automation Engineer","QA Analyst","QA Lead","Test Manager"],"keywords":["quality assurance","software testing","test automation","selenium","JIRA","agile","scrum","manual testing","regression testing","api testing","defect tracking","test planning","CI/CD"],"tools":["JIRA","Selenium","Postman","TestRail","Cypress","Jenkins","Git"],"suggestions":["Add quantified achievements","Include ISTQB certification","Add GitHub/portfolio links","Mention domain expertise","Use action verbs"]}`;
+{"candidateName":"name","currentRole":"title","experience":"X years","atsScore":70,"optimizedResume":"COMPLETE professional resume: Professional Summary | Core Skills | Professional Experience | Education | Certifications | Tools & Technologies","skills":["Manual Testing","Test Automation","JIRA","Selenium","Agile","Scrum","API Testing","Postman","Bug Reporting","Regression Testing","Performance Testing","SQL","Python","Project Management","Risk Management"],"jobTitles":["QA Engineer","SQA Engineer","Test Automation Engineer","QA Analyst","QA Lead","Test Manager","Scrum Master"],"keywords":["quality assurance","software testing","test automation","selenium","JIRA","agile","scrum","manual testing","regression testing","api testing","defect tracking","test planning","CI/CD","DevOps"],"tools":["JIRA","Selenium","Postman","TestRail","Cypress","Appium","Jenkins","Git"],"suggestions":["Add quantified achievements","Include ISTQB certification","Add GitHub/portfolio links","Mention domain expertise: fintech/ecommerce/healthtech","Use action verbs: Architected, Optimized, Reduced, Delivered"]}`;
 
-const ATS_MANUAL=(info)=>`Build ATS resume for: ${info}. SQA roles, remote/relocation worldwide, EXCLUDE Israel. Return ONLY raw JSON: {"candidateName":"string","currentRole":"string","experience":"string","atsScore":70,"optimizedResume":"full resume","skills":["array"],"jobTitles":["array"],"keywords":["array"],"tools":["array"],"suggestions":["array"]}`;
+const ATS_MANUAL=(info)=>`Build ATS resume for: ${info}
+Roles: SQA/QA Engineering. Remote worldwide OR relocation. EXCLUDE Israel.
+Return ONLY raw JSON: {"candidateName":"string","currentRole":"string","experience":"string","atsScore":70,"optimizedResume":"full professional resume text","skills":["array of skills"],"jobTitles":["array"],"keywords":["array"],"tools":["array"],"suggestions":["5 tips"]}`;
 
-const HUNT_PROMPT=(skills,titles)=>`Search the web NOW for current open jobs. Find real live positions.
-SQA/QA roles: ${titles}. Skills: ${skills}.
-REQUIREMENTS: Remote (work anywhere) OR Relocation (company pays visa+move). Worldwide. EXCLUDE Israel.
+const HUNT_PROMPT=(skills,titles)=>`Search the web right now for current open SQA/QA jobs.
+
+Titles: ${titles}
+Skills: ${skills}
+
+STRICT REQUIREMENTS:
+- REMOTE (work from anywhere worldwide) OR RELOCATION (company provides visa + move)
+- Any country EXCEPT Israel
+- Currently open in 2025-2026
+
 Search: linkedin.com/jobs, weworkremotely.com, himalayas.app, remotive.io, remote.co, relocate.me, indeed.com, wellfound.com, glassdoor.com
-Return ONLY JSON array (no markdown): [{"title":"string","company":"string","location":"string","type":"remote|relocation","salary":"string|null","applyLink":"url","description":"2-3 sentences","requirements":["array"],"posted":"string","visaSponsorship":true,"country":"string","tech_stack":["array"]}]`;
 
+Return ONLY a JSON array:
+[{"title":"string","company":"string","location":"string","type":"remote or relocation","salary":"string or null","applyLink":"exact url","description":"2-3 sentences","requirements":["array"],"posted":"string","visaSponsorship":true,"country":"string","tech_stack":["array"]}]
+
+JSON only. No markdown. No explanation.`;
+
+// ═══════════════════════════════════════
+//  THEME
+// ═══════════════════════════════════════
 const C={bg:"#07090F",surface:"#0E1420",card:"#111929",border:"#1C2B42",blue:"#3B7BF8",blueGlow:"#3B7BF820",purple:"#7C5CFC",teal:"#0ECFB0",gold:"#F5A623",red:"#F44A58",text:"#EDF2FF",muted:"#5A7090",label:"#8BA3C7"};
 
 const CSS=`
@@ -84,7 +135,6 @@ function Logo(){
     </div>
   </div>;
 }
-
 function Tag({children,color=C.blue,bg}){
   return <span style={{display:"inline-flex",alignItems:"center",padding:"4px 12px",borderRadius:20,fontSize:12,fontWeight:600,color,background:bg||(color+"18")}}>{children}</span>;
 }
@@ -95,10 +145,13 @@ function ApiKeyScreen({onDone}){
   const [testing,setTesting]=useState(false);
   const [err,setErr]=useState("");
   const test=async()=>{
-    if(!key.trim().startsWith("sk-ant-")){setErr("Key 'sk-ant-' se shuru honi chahiye");return;}
+    if(!key.trim()){setErr("Key enter karein");return;}
     setTesting(true);setErr("");
-    try{await claudeCall([{role:"user",content:"Say OK"}],false,key.trim());saveKey(key.trim());onDone();}
-    catch(e){setErr("Invalid key: "+e.message);}
+    try{
+      const res=await fetch(OR_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key.trim()}`,"HTTP-Referer":"https://qa-global-hunt.vercel.app"},body:JSON.stringify({model:ATS_MODEL,max_tokens:10,messages:[{role:"user",content:"Hi"}]})});
+      if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e?.error?.message||"Invalid key");}
+      saveKey(key.trim());onDone();
+    }catch(e){setErr("Key invalid hai: "+e.message);}
     setTesting(false);
   };
   return <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'DM Sans',sans-serif",color:C.text,display:"flex",flexDirection:"column"}}>
@@ -108,12 +161,12 @@ function ApiKeyScreen({onDone}){
       <div className="fu" style={{maxWidth:460,width:"100%",background:C.card,borderRadius:22,border:`1px solid ${C.border}`,overflow:"hidden"}}>
         <div style={{padding:"32px 32px 28px",background:`linear-gradient(135deg,${C.blue}12,${C.purple}08)`,borderBottom:`1px solid ${C.border}`}}>
           <div style={{fontSize:44,marginBottom:14}}>🔑</div>
-          <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:10}}>Anthropic API Key</h1>
-          <p style={{color:C.muted,fontSize:14,lineHeight:1.7}}>Yeh platform Claude AI use karta hai. Apni free API key enter karein.</p>
+          <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:10}}>OpenRouter API Key</h1>
+          <p style={{color:C.muted,fontSize:14,lineHeight:1.7}}>Aapka OpenRouter key use hoga — Claude + Perplexity dono AI models ke liye.</p>
         </div>
         <div style={{padding:32}}>
-          <label style={{display:"block",fontSize:12,fontWeight:700,color:C.muted,letterSpacing:"0.8px",textTransform:"uppercase",marginBottom:10}}>API Key</label>
-          <input type="password" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==="Enter"&&test()} placeholder="sk-ant-api03-..."
+          <label style={{display:"block",fontSize:12,fontWeight:700,color:C.muted,letterSpacing:"0.8px",textTransform:"uppercase",marginBottom:10}}>OpenRouter API Key</label>
+          <input type="password" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==="Enter"&&test()} placeholder="sk-or-..."
             style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"13px 16px",color:C.text,fontSize:14,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:err?8:0}}/>
           {err&&<p style={{color:C.red,fontSize:13,marginBottom:8}}>{err}</p>}
           <button onClick={test} disabled={testing||!key.trim()} className="pbtn"
@@ -121,16 +174,15 @@ function ApiKeyScreen({onDone}){
             {testing?"Testing...":"Platform Activate Karein →"}
           </button>
           <div style={{marginTop:22,background:C.surface,borderRadius:12,padding:"16px 18px",border:`1px solid ${C.border}`}}>
-            <p style={{fontSize:13,fontWeight:600,color:C.label,marginBottom:10}}>🔗 Free API Key kahan se milegi?</p>
+            <p style={{fontSize:13,fontWeight:600,color:C.label,marginBottom:10}}>🔗 Key kahan milegi?</p>
             <ol style={{paddingLeft:18,color:C.muted,fontSize:13,lineHeight:1.9}}>
-              <li>console.anthropic.com par jao</li>
-              <li>Sign up karo (free hain)</li>
-              <li>API Keys → Create Key</li>
-              <li>Yahan paste karo</li>
+              <li>openrouter.ai/workspaces/default/keys par jao</li>
+              <li>Create Key click karo</li>
+              <li>Key copy karo aur yahan paste karo</li>
             </ol>
-            <a href="https://console.anthropic.com/api-keys" target="_blank" rel="noopener noreferrer" style={{display:"inline-block",marginTop:10,fontSize:13,color:C.blue,textDecoration:"none",fontWeight:600}}>→ console.anthropic.com ↗</a>
+            <a href="https://openrouter.ai/workspaces/default/keys" target="_blank" rel="noopener noreferrer" style={{display:"inline-block",marginTop:10,fontSize:13,color:C.blue,textDecoration:"none",fontWeight:600}}>→ openrouter.ai/keys ↗</a>
           </div>
-          <p style={{color:C.muted,fontSize:11,textAlign:"center",marginTop:16,lineHeight:1.6}}>Key sirf browser session mein store hoti hai · Page refresh par dobara enter karni hogi</p>
+          <p style={{color:C.muted,fontSize:11,textAlign:"center",marginTop:16,lineHeight:1.6}}>Key sirf browser session mein store hoti hai · Secure hai</p>
         </div>
       </div>
     </div>
@@ -138,7 +190,7 @@ function ApiKeyScreen({onDone}){
 }
 
 // ── HOME SCREEN ──
-function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,file,onOptimize,onChangeKey}){
+function HomeScreen({onFile,pdfStatus,manualInput,setManualInput,useManual,setUseManual,file,onOptimize,onChangeKey}){
   const [drag,setDrag]=useState(false);
   const ref=useRef();
   const ok=file||(useManual&&manualInput.trim().length>20);
@@ -152,7 +204,7 @@ function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,fi
     <nav style={{padding:"18px 28px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",position:"relative",zIndex:10,backdropFilter:"blur(12px)",background:C.bg+"DD"}}>
       <Logo/>
       <div style={{display:"flex",gap:10,alignItems:"center"}}>
-        <span style={{color:C.teal,fontSize:13}}>● Live</span>
+        <span style={{color:C.teal,fontSize:13}}>● OpenRouter</span>
         <button onClick={onChangeKey} className="nbtn" style={{background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 12px",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",transition:"all .2s"}}>🔑 API Key</button>
       </div>
     </nav>
@@ -160,8 +212,7 @@ function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,fi
       <div className="fu" style={{textAlign:"center",marginBottom:52}}>
         <div style={{display:"inline-flex",alignItems:"center",gap:8,background:C.surface,border:`1px solid ${C.border}`,borderRadius:24,padding:"7px 18px",marginBottom:28,fontSize:13}}>
           <span style={{color:C.teal,fontSize:10}}>●</span>
-          <span style={{color:C.label}}>190+ countries mein search </span>
-          <span style={{color:C.border}}>·</span>
+          <span style={{color:C.label}}>190+ countries · </span>
           <span style={{color:C.gold,fontWeight:600}}>Israel Excluded</span>
         </div>
         <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:"clamp(34px,5.5vw,54px)",fontWeight:800,lineHeight:1.1,letterSpacing:"-1.5px",marginBottom:22}}>
@@ -169,10 +220,10 @@ function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,fi
           <span style={{background:`linear-gradient(110deg,${C.blue} 30%,${C.purple})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>SQA Career</span><br/>
           Starts Here
         </h1>
-        <p style={{fontSize:17,color:C.muted,lineHeight:1.75,maxWidth:500,margin:"0 auto 40px"}}>Resume upload karein → ATS-optimized ho jayegi → Worldwide remote & relocation jobs mil jayengi</p>
+        <p style={{fontSize:17,color:C.muted,lineHeight:1.75,maxWidth:500,margin:"0 auto 40px"}}>Resume upload karein → ATS-optimized ho jayegi → Worldwide remote & relocation jobs automatically dhundhe jayenge</p>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,flexWrap:"wrap"}}>
-          {[{i:"📄",l:"Upload"},null,{i:"🤖",l:"ATS Boost"},null,{i:"🌍",l:"AI Hunt"},null,{i:"✈️",l:"Apply"}].map((s,idx)=>
-            s?<div key={idx} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+          {[{i:"📄",l:"Upload"},{},  {i:"🤖",l:"ATS Boost"},{},{i:"🌍",l:"AI Hunt"},{},{i:"✈️",l:"Apply"}].map((s,idx)=>
+            s.i?<div key={idx} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
               <div className="float" style={{width:50,height:50,borderRadius:14,background:C.card,border:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{s.i}</div>
               <span style={{fontSize:11,color:C.muted}}>{s.l}</span>
             </div>:<div key={idx} style={{color:C.border,fontSize:18,paddingBottom:18}}>›</div>
@@ -192,7 +243,13 @@ function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,fi
               onClick={()=>ref.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={drop}>
               <input ref={ref} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>onFile(e.target.files[0])}/>
               <div className="float" style={{fontSize:48,marginBottom:14}}>{file?"✅":"📄"}</div>
-              {file?<><p style={{fontWeight:600,marginBottom:4,fontSize:15}}>{file.name}</p><p style={{color:C.teal,fontSize:13}}>PDF ready ✓</p></>:<><p style={{fontWeight:600,marginBottom:8,fontSize:15}}>PDF resume yahan drop karein</p><p style={{color:C.muted,fontSize:13}}>ya click karein · PDF only</p></>}
+              {file?<>
+                <p style={{fontWeight:600,marginBottom:4,fontSize:15}}>{file.name}</p>
+                <p style={{color:pdfStatus==="error"?C.red:C.teal,fontSize:13}}>{pdfStatus==="extracting"?"📖 Text extract ho raha hai...":pdfStatus==="done"?"✓ Text extracted, ready!":pdfStatus==="error"?"⚠️ Extract failed, manual use karein":"📄 File selected"}</p>
+              </>:<>
+                <p style={{fontWeight:600,marginBottom:8,fontSize:15}}>PDF resume yahan drop karein</p>
+                <p style={{color:C.muted,fontSize:13}}>ya click karein · PDF only</p>
+              </>}
             </div>
             {!file&&<p style={{textAlign:"center",color:C.muted,fontSize:12,marginTop:12}}>PDF nahi? <strong style={{color:C.label}}>Describe Manually</strong> tab try karein</p>}
           </>):(
@@ -207,22 +264,13 @@ function HomeScreen({onFile,manualInput,setManualInput,useManual,setUseManual,fi
       </div>
 
       <div className="fu2" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
-        {[{i:"🎯",c:C.blue,t:"ATS-Optimized",d:"Keywords extracted, resume rebuilt for ATS systems"},{i:"🌍",c:C.teal,t:"Worldwide Jobs",d:"Remote + relocation across 190+ countries"},{i:"✈️",c:C.gold,t:"Relocation Filter",d:"Companies that provide full visa & moving support"}].map((f,i)=>(
+        {[{i:"🎯",c:C.blue,t:"ATS-Optimized",d:"Claude AI keywords extract kar ke resume rebuild karta hai"},{i:"🌍",c:C.teal,t:"Worldwide Jobs",d:"Perplexity AI real-time 190+ countries mein search karta hai"},{i:"✈️",c:C.gold,t:"Relocation Filter",d:"Visa sponsorship wali companies jo aapko bula sakti hain"}].map((f,i)=>(
           <div key={i} style={{background:C.surface,borderRadius:16,padding:"20px 18px",border:`1px solid ${C.border}`,textAlign:"center"}}>
             <div style={{fontSize:30,marginBottom:10}}>{f.i}</div>
             <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:14,marginBottom:6,color:f.c}}>{f.t}</div>
             <div style={{color:C.muted,fontSize:12,lineHeight:1.6}}>{f.d}</div>
           </div>
         ))}
-      </div>
-
-      <div className="fu3" style={{marginTop:28,textAlign:"center"}}>
-        <p style={{color:C.muted,fontSize:12,marginBottom:12,letterSpacing:"0.5px",textTransform:"uppercase"}}>Searches across</p>
-        <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center"}}>
-          {["LinkedIn","Indeed","Remote.co","WeWorkRemotely","Himalayas","Remotive","Relocate.me","Glassdoor","Wellfound"].map(b=>(
-            <span key={b} style={{background:C.card,border:`1px solid ${C.border}`,color:C.label,padding:"5px 14px",borderRadius:8,fontSize:12,fontWeight:500}}>{b}</span>
-          ))}
-        </div>
       </div>
     </div>
   </div>;
@@ -245,13 +293,13 @@ function ATSScreen({ats,loading,onHunt,onBack}){
     </header>
     <div style={{maxWidth:880,margin:"0 auto",padding:"36px 24px"}}>
       <div className="fu" style={{marginBottom:32}}>
-        <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:30,fontWeight:800,letterSpacing:"-0.5px",marginBottom:8}}>{loading?"Resume Optimize Ho Raha Hai...":ats?.candidateName+" ka ATS Profile"}</h1>
-        <p style={{color:C.muted,fontSize:15}}>{loading?"AI aapki resume parh raha hai, keywords extract kar raha hai...":ats?.currentRole+" · "+ats?.experience}</p>
+        <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:30,fontWeight:800,letterSpacing:"-0.5px",marginBottom:8}}>{loading?"Resume Optimize Ho Raha Hai...":`${ats?.candidateName||"Your"} ka ATS Profile`}</h1>
+        <p style={{color:C.muted,fontSize:15}}>{loading?"Claude AI aapki resume parh raha hai, keywords extract kar raha hai...":ats?.currentRole+" · "+ats?.experience}</p>
       </div>
       {loading?<div style={{textAlign:"center",padding:"80px 24px"}}>
         <div className="spin" style={{width:60,height:60,border:`3px solid ${C.border}`,borderTopColor:C.blue,borderRadius:"50%",margin:"0 auto 28px"}}/>
-        <p style={{color:C.label,fontSize:16,marginBottom:8}}>Resume analyze ho rahi hai...</p>
-        <p style={{color:C.muted,fontSize:13}}>QA keywords extract · ATS rebuild · Score calculate</p>
+        <p style={{color:C.label,fontSize:16,marginBottom:8}}>Claude AI analyze kar raha hai...</p>
+        <p style={{color:C.muted,fontSize:13}}>Keywords extract · ATS rebuild · Score calculate</p>
       </div>:<>
         <div className="fu1" style={{display:"flex",gap:4,marginBottom:24,background:C.surface,padding:4,borderRadius:12,width:"fit-content",border:`1px solid ${C.border}`}}>
           {[{id:"resume",l:"📄 Resume"},{id:"skills",l:"🛠️ Skills"},{id:"keywords",l:"🔑 Keywords"},{id:"tips",l:"💡 Tips"}].map(t=>(
@@ -264,7 +312,7 @@ function ATSScreen({ats,loading,onHunt,onBack}){
               <span style={{fontWeight:700,fontSize:15}}>ATS-Optimized Resume</span>
               <button onClick={copy} style={{background:copied?C.teal:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"8px 18px",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",transition:"background .2s"}}>{copied?"✓ Copied!":"📋 Copy"}</button>
             </div>
-            <div className="ats" style={{padding:"24px 28px",maxHeight:520,overflowY:"auto"}}>{ats?.optimizedResume||"Error loading. Please try again."}</div>
+            <div className="ats" style={{padding:"24px 28px",maxHeight:520,overflowY:"auto"}}>{ats?.optimizedResume||"Error. Please try again."}</div>
           </div>}
           {tab==="skills"&&<div style={{display:"flex",flexDirection:"column",gap:18}}>
             <div style={{background:C.card,borderRadius:18,padding:"22px 24px",border:`1px solid ${C.border}`}}>
@@ -299,7 +347,7 @@ function ATSScreen({ats,loading,onHunt,onBack}){
           <button onClick={onHunt} className="pbtn" style={{background:`linear-gradient(135deg,${C.blue},${C.purple})`,color:"#fff",border:"none",borderRadius:16,padding:"18px 56px",fontSize:18,fontWeight:700,fontFamily:"'Syne',sans-serif",cursor:"pointer",boxShadow:`0 10px 36px ${C.blue}40`,letterSpacing:"0.3px"}}>
             🌍 Hunt Jobs Worldwide Now →
           </button>
-          <p style={{color:C.muted,fontSize:13,marginTop:12}}>AI LinkedIn, Remote.co, Himalayas, Relocate.me scan karega</p>
+          <p style={{color:C.muted,fontSize:13,marginTop:12}}>Perplexity AI real-time LinkedIn, Remote.co, Himalayas, Relocate.me scan karega</p>
         </div>
       </>}
     </div>
@@ -316,7 +364,7 @@ function HuntScreen({log}){
         <div style={{position:"absolute",inset:0,borderRadius:"50%",background:`radial-gradient(circle,${C.blue}25,${C.bg})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:52}}>🌍</div>
       </div>
       <h2 style={{fontFamily:"'Syne',sans-serif",fontSize:28,fontWeight:800,marginBottom:10,letterSpacing:"-0.5px"}}>Globally Hunting...</h2>
-      <p style={{color:C.muted,marginBottom:32,fontSize:15}}>AI worldwide job boards scan kar raha hai</p>
+      <p style={{color:C.muted,marginBottom:32,fontSize:15}}>Perplexity AI worldwide job boards real-time scan kar raha hai</p>
       <div style={{background:C.card,borderRadius:16,padding:22,border:`1px solid ${C.border}`,textAlign:"left",minHeight:180}}>
         {log.map((msg,i)=><div key={i} className="li" style={{padding:"7px 0",fontSize:14,color:i===log.length-1?C.text:C.muted,borderBottom:i<log.length-1?`1px solid ${C.border}20`:"none"}}>{msg}</div>)}
         {log.length>0&&<div style={{display:"flex",gap:5,paddingTop:14}}>
@@ -346,7 +394,7 @@ function JobsScreen({jobs,onBack,onHuntAgain}){
     <div style={{maxWidth:900,margin:"0 auto",padding:"32px 24px"}}>
       <div className="fu" style={{marginBottom:28}}>
         <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:28,fontWeight:800,letterSpacing:"-0.5px",marginBottom:10}}>{jobs.length>0?`${jobs.length} Opportunities Found`:"Search Complete"}</h1>
-        <p style={{color:C.muted,fontSize:14}}>Worldwide SQA remote & relocation · Israel excluded · AI ne live fetch kiye</p>
+        <p style={{color:C.muted,fontSize:14}}>Worldwide SQA remote & relocation · Israel excluded · Perplexity AI ne live fetch kiye</p>
       </div>
       <div className="fu1" style={{display:"flex",gap:8,marginBottom:24,flexWrap:"wrap"}}>
         {[{id:"all",l:`All (${jobs.length})`},{id:"remote",l:`🌐 Remote (${rm})`},{id:"relocation",l:`✈️ Relocation (${rl})`}].map(f=>(
@@ -365,8 +413,7 @@ function JobsScreen({jobs,onBack,onHuntAgain}){
       </div>:<div style={{display:"flex",flexDirection:"column",gap:14}}>
         {fil.map((job,i)=>{
           const ir=job.type?.toLowerCase().includes("remote");
-          const tc=ir?C.teal:C.gold;
-          const io=exp===i;
+          const tc=ir?C.teal:C.gold;const io=exp===i;
           return <div key={i} className="jcard fu" style={{background:C.card,borderRadius:18,padding:"22px 24px",border:`1px solid ${io?C.blue:C.border}`,cursor:"pointer",animationDelay:`${i*.04}s`,boxShadow:io?`0 8px 32px ${C.blueGlow}`:"none"}} onClick={()=>setExp(io?null:i)}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:16}}>
               <div style={{flex:1,minWidth:0}}>
@@ -408,7 +455,8 @@ function JobsScreen({jobs,onBack,onHuntAgain}){
 export default function App(){
   const [screen,setScreen]=useState(getKey()?"home":"apikey");
   const [file,setFile]=useState(null);
-  const [b64,setB64]=useState(null);
+  const [pdfText,setPdfText]=useState("");
+  const [pdfStatus,setPdfStatus]=useState("idle");
   const [manual,setManual]=useState("");
   const [useManual,setUseManual]=useState(false);
   const [ats,setAts]=useState(null);
@@ -417,16 +465,30 @@ export default function App(){
   const [log,setLog]=useState([]);
   const addLog=useCallback(m=>setLog(p=>[...p,m]),[]);
 
-  const handleFile=async(f)=>{if(!f)return;setFile(f);try{setB64(await fileToBase64(f));}catch(e){console.error(e);}};
+  const handleFile=async(f)=>{
+    if(!f)return;
+    setFile(f);setPdfStatus("extracting");
+    try{
+      const b64=await fileToBase64(f);
+      const text=await extractPDFText(b64);
+      setPdfText(text);
+      setPdfStatus("done");
+    }catch(e){
+      console.error("PDF extract error:",e);
+      setPdfStatus("error");
+    }
+  };
 
   const optimize=async()=>{
     setAtsLoading(true);setScreen("ats");
     try{
-      let content;
-      if(!useManual&&b64){content=[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:ATS_PROMPT}];}
-      else{content=ATS_MANUAL(manual||"SQA Engineer 3 years experience, Manual Testing, Selenium, JIRA, Agile Scrum, some Project Management");}
-      const data=await claudeCall([{role:"user",content}]);
-      const text=data.content.map(i=>i.text||"").join("");
+      let prompt;
+      if(!useManual&&pdfText){
+        prompt=ATS_PROMPT(pdfText);
+      }else{
+        prompt=ATS_MANUAL(manual||"SQA Engineer 3 years experience, Manual Testing, Selenium, JIRA, Agile Scrum, some Project Management");
+      }
+      const text=await orCall([{role:"user",content:prompt}],ATS_MODEL);
       setAts(parseJSON(text,"object"));
     }catch(e){
       console.error(e);
@@ -439,23 +501,24 @@ export default function App(){
     setScreen("hunt");setJobs([]);setLog([]);
     const sk=(ats?.skills||[]).slice(0,12).join(", ")||"SQA Testing, QA Engineering, Test Automation, JIRA, Selenium, Agile";
     const ti=(ats?.jobTitles||[]).slice(0,5).join(", ")||"QA Engineer, SQA Engineer, Test Automation Engineer";
-    addLog("🚀 Global job hunt initialized...");
-    const t1=setTimeout(()=>addLog("📋 SQA profile loaded..."),600);
-    const t2=setTimeout(()=>addLog("🌐 Worldwide job boards connect ho rahe hain..."),1400);
-    const t3=setTimeout(()=>addLog("🔍 LinkedIn, Indeed, Remote.co scan ho raha hai..."),2400);
-    const t4=setTimeout(()=>addLog("🏢 Himalayas, Remotive, WeWorkRemotely check ho rahe hain..."),3600);
-    const t5=setTimeout(()=>addLog("✈️ Relocation + visa sponsorship roles dhundh rahe hain..."),4800);
+    addLog("🚀 Perplexity AI job hunt start...");
+    const t1=setTimeout(()=>addLog("🌐 Worldwide job boards connect ho rahe hain..."),800);
+    const t2=setTimeout(()=>addLog("🔍 LinkedIn, Indeed, Remote.co scan ho raha hai..."),2000);
+    const t3=setTimeout(()=>addLog("🏢 Himalayas, Remotive, WeWorkRemotely check..."),3500);
+    const t4=setTimeout(()=>addLog("✈️ Relocation + visa sponsorship filter ho raha hai..."),5000);
     try{
-      const data=await claudeCall([{role:"user",content:HUNT_PROMPT(sk,ti)}],true);
-      [t1,t2,t3,t4,t5].forEach(clearTimeout);
+      const text=await orCall([{role:"user",content:HUNT_PROMPT(sk,ti)}],HUNT_MODEL);
+      [t1,t2,t3,t4].forEach(clearTimeout);
       addLog("🔄 Results process ho rahe hain...");
-      const text=data.content.filter(i=>i.type==="text").map(i=>i.text).join("");
       try{
         const result=parseJSON(text,"array");
         const clean=result.filter(j=>j&&j.title&&j.company);
         setJobs(clean);addLog(`🎯 ${clean.length} opportunities mili worldwide!`);
       }catch{addLog("⚠️ Results processed");setJobs([]);}
-    }catch(e){console.error(e);[t1,t2,t3,t4,t5].forEach(clearTimeout);addLog("⚠️ Search complete");}
+    }catch(e){
+      console.error(e);[t1,t2,t3,t4].forEach(clearTimeout);
+      addLog("⚠️ Search complete: "+e.message);
+    }
     setTimeout(()=>setScreen("jobs"),800);
   };
 
@@ -463,5 +526,5 @@ export default function App(){
   if(screen==="hunt")   return <HuntScreen log={log}/>;
   if(screen==="ats")    return <ATSScreen ats={ats} loading={atsLoading} onHunt={hunt} onBack={()=>setScreen("home")}/>;
   if(screen==="jobs")   return <JobsScreen jobs={jobs} onBack={()=>setScreen("ats")} onHuntAgain={hunt}/>;
-  return <HomeScreen onFile={handleFile} manualInput={manual} setManualInput={setManual} useManual={useManual} setUseManual={setUseManual} file={file} onOptimize={optimize} onChangeKey={()=>setScreen("apikey")}/>;
+  return <HomeScreen onFile={handleFile} pdfStatus={pdfStatus} manualInput={manual} setManualInput={setManual} useManual={useManual} setUseManual={setUseManual} file={file} onOptimize={optimize} onChangeKey={()=>setScreen("apikey")}/>;
 }
