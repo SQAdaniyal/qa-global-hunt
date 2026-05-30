@@ -4,8 +4,8 @@ import { useState, useRef, useCallback } from "react";
 //  OPENROUTER API
 // ═══════════════════════════════════════
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
-const ATS_MODEL  = "openai/gpt-4o-mini";
-const HUNT_MODEL = "perplexity/sonar";
+const ATS_MODEL  = "google/gemini-2.0-flash-exp:free";
+const HUNT_MODEL = "google/gemini-2.0-flash-exp:free";
 
 function getKey(){ return sessionStorage.getItem("orkey")||""; }
 function saveKey(k){ sessionStorage.setItem("orkey",k); }
