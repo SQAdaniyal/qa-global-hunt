@@ -4,8 +4,8 @@ import { useState, useRef, useCallback } from "react";
 //  API — calls /api/chat (Vercel route)
 //  No API key needed in browser!
 // ═══════════════════════════════════════
-const ATS_MODEL  = "meta-llama/llama-3.3-70b-instruct:free";
-const HUNT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const ATS_MODEL  = "llama-3.3-70b-versatile";
+const HUNT_MODEL = "llama-3.3-70b-versatile";
 
 async function orCall(messages, model = ATS_MODEL) {
   const res = await fetch("/api/chat", {
@@ -470,7 +470,7 @@ export default function App() {
       setAts(parseJSON(text, "object"));
     } catch(e) {
       console.error(e);
-      setAts({candidateName:"Your Profile",currentRole:"SQA Engineer",experience:"Professional",atsScore:72,optimizedResume:"Error: "+e.message+"\n\nVercel mein OPENROUTER_API_KEY env variable set hai? Check karein.",skills:["SQA","Manual Testing","Automation","JIRA","Agile"],jobTitles:["QA Engineer","SQA Engineer"],keywords:["quality assurance","software testing","agile"],tools:["JIRA","Selenium","Postman"],suggestions:["Vercel dashboard mein OPENROUTER_API_KEY env variable add karein"]});
+      setAts({candidateName:"Your Profile",currentRole:"SQA Engineer",experience:"Professional",atsScore:72,optimizedResume:"Error: "+e.message+"\n\nVercel mein GROQ_API_KEY env variable set hai? groq.com se free key lo!",skills:["SQA","Manual Testing","Automation","JIRA","Agile"],jobTitles:["QA Engineer","SQA Engineer"],keywords:["quality assurance","software testing","agile"],tools:["JIRA","Selenium","Postman"],suggestions:["Vercel dashboard mein OPENROUTER_API_KEY env variable add karein"]});
     }
     setAtsLoading(false);
   };
